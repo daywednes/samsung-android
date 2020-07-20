@@ -24,102 +24,77 @@ THE SOFTWARE.
 ****************************************************************************/
 package one.harmony.puzzle.ui.game;
 
-import org.cocos2dx.lib.Cocos2dxActivity;
-import org.cocos2dx.lib.Cocos2dxGLSurfaceView;
-import org.web3j.crypto.Credentials;
-import org.web3j.protocol.Web3j;
-import org.web3j.protocol.http.HttpService;
-import org.web3j.tx.gas.DefaultGasProvider;
-
-import android.os.Bundle;
-
 import android.content.Intent;
 import android.content.res.Configuration;
+import android.os.Bundle;
 import android.util.Log;
 
+import androidx.annotation.Nullable;
+
+import com.samsung.android.sdk.coldwallet.ScwCoinType;
+import com.samsung.android.sdk.coldwallet.ScwDeepLink;
+import com.samsung.android.sdk.coldwallet.ScwService;
+
+import org.cocos2dx.lib.Cocos2dxActivity;
+import org.cocos2dx.lib.Cocos2dxGLSurfaceView;
+
+import java.math.BigInteger;
 import java.util.List;
 
-import io.reactivex.Observable;
 import io.reactivex.android.schedulers.AndroidSchedulers;
 import io.reactivex.disposables.CompositeDisposable;
 import io.reactivex.observers.DisposableObserver;
 import io.reactivex.schedulers.Schedulers;
-import one.harmony.puzzle.contract.Puzzle;
+import one.harmony.puzzle.ethereum.KeyStoreManager;
+import one.harmony.puzzle.ethereum.NodeConnector;
+import one.harmony.puzzle.ethereum.WalletService;
+import one.harmony.puzzle.utils.Util;
 
 public class AppActivity extends Cocos2dxActivity {
 
     private static final String TAG = AppActivity.class.getSimpleName();
 
+    static AppActivity currentContext;
+
+    ScwService SbkInstance;
+    private ScwService.ScwGetAddressListCallback mScwGetAddressListCallback;
+
     private CompositeDisposable mCompositeDisposable;
+    private static WalletService walletService;
+
+    public static String publicAddress = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // Workaround in https://stackoverflow.com/questions/16283079/re-launch-of-activity-on-home-button-but-only-the-first-time/16447508
         if (!isTaskRoot()) {
-            // Android launched another instance of the root activity into an existing task
-            //  so just quietly finish and go away, dropping the user back into the activity
-            //  at the top of the stack (ie: the last state of this task)
-            // Don't need to finish it again since it's finished in super.onCreate .
             return;
         }
         // DO OTHER INITIALIZATION BELOW
         SDKWrapper.getInstance().init(this);
 
+        currentContext = this;
+        SbkInstance = ScwService.getInstance();
+
+        // Check if SBK is supported on the device or not
+        if (!KeyStoreManager.getInstance(this).isSBKSupported()) {
+            Log.d(Util.LOG_TAG, "SBK is not supported on Device");
+            return;
+        }
+        // Check if required API level is not matched
+        if (!Util.isAPILevelMatched(this)) {
+            Log.d(Util.LOG_TAG, "SBK update required.");
+            return;
+        }
+
+        // Check if SBK Wallet is set
+        if (!KeyStoreManager.getInstance(this).isSBKWalletSet()) {
+            Log.d(Util.LOG_TAG, "SBK wallet not set. Need to jump to SBK to create a wallet");
+            return;
+        }
+
         initParam();
-        testGetTopPlayers();
 
-    }
-
-    private void initParam() {
-        this.mCompositeDisposable = new CompositeDisposable();
-    }
-
-    public CompositeDisposable getCompositeDisposable() {
-        return mCompositeDisposable;
-    }
-
-    private void testGetTopPlayers() {
-        getCompositeDisposable().add(getTopPlayers()
-                .subscribeOn(Schedulers.io())
-                .observeOn(AndroidSchedulers.mainThread())
-                .subscribeWith(new DisposableObserver<Void>() {
-
-                    @Override
-                    public void onNext(Void test) {
-
-                    }
-
-                    @Override
-                    public void onError(Throwable e) {
-
-                    }
-
-                    @Override
-                    public void onComplete() {
-
-                    }
-                }));
-    }
-
-    public Observable<Void> getTopPlayers() {
-        return Observable.create(emitter -> {
-            Log.d(TAG, "getTopPlayers()");
-            String infuraUrl = "https://ropsten.infura.io/v3/3a84cb891979426aa702c7fea6090ef2";
-            Web3j web3j = Web3j.build(new HttpService(infuraUrl));
-            String puzzleContract = "0xCdCF4f95E8f2AA4710eD2D93474E4836183B9a08";
-            Credentials credentials = Credentials.create("155FD0A535250B64B9DF7956FC542A24343176B009D21C8111AFCE6AB74A5F96");
-
-            Puzzle puzzle = Puzzle.load(puzzleContract, web3j, credentials, new DefaultGasProvider());
-
-            try {
-                List topPlayers = puzzle.getTopPlayers().send();
-                Log.d(TAG, "getTopPlayers():topPlayers: " + topPlayers);
-            } catch (Exception e) {
-                Log.e(TAG, "getTopPlayers():" + e.getMessage());
-                e.printStackTrace();
-            }
-        });
     }
     
     @Override
@@ -150,7 +125,7 @@ public class AppActivity extends Cocos2dxActivity {
     protected void onDestroy() {
         super.onDestroy();
         SDKWrapper.getInstance().onDestroy();
-
+        NodeConnector.getInstance(this).shutDown();
     }
 
     @Override
@@ -206,4 +181,115 @@ public class AppActivity extends Cocos2dxActivity {
         SDKWrapper.getInstance().onStart();
         super.onStart();
     }
+
+    private void initParam() {
+        this.currentContext = this;
+        this.SbkInstance = ScwService.getInstance();
+        this.mCompositeDisposable = new CompositeDisposable();
+        this.walletService = new WalletService();
+
+        String ethereumHdPath = ScwService.getHdPath(ScwCoinType.ETH, 0);
+        getPublicAddress(ethereumHdPath);
+    }
+
+    private void getPublicAddress(String hdPath) {
+        KeyStoreManager.getInstance(this).getPublicAddress(hdPath, new ScwService.ScwGetAddressListCallback() {
+            @Override
+            public void onSuccess(List<String> addressList) {
+                publicAddress = addressList.get(0);
+                Log.i(Util.LOG_TAG, "Address from SBK is : " + publicAddress);
+            }
+
+            @Override
+            public void onFailure(int i, @Nullable String s) {
+                Log.e(Util.LOG_TAG, "Error Code: " + i + " - msg: " + s);
+            }
+        });
+    }
+
+    public CompositeDisposable getCompositeDisposable() {
+        return mCompositeDisposable;
+    }
+
+    @Deprecated
+    private void getTopPlayersAsync(){
+        getCompositeDisposable().add(walletService.getTopPlayers()
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribeWith(new DisposableObserver<List>() {
+
+                    @Override
+                    public void onNext(List list) {
+                        Log.d(TAG, "getTopPlayers():list: " + list);
+
+                    }
+
+                    @Override
+                    public void onError(Throwable e) {
+                        Log.d(TAG, "getTopPlayers():e: " + e.getMessage());
+                        e.printStackTrace();
+                    }
+
+                    @Override
+                    public void onComplete() {
+                        Log.d(TAG, "getTopPlayers():onComplete()");
+                    }
+                }));
+    }
+
+    public static String getTopPlayers() {
+        try {
+            Object result = walletService.getTopPlayers(publicAddress);
+            Log.d(TAG, "getTopPlayers(): " + result);
+            return result.toString();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return "";
+    }
+
+    public static void updateScore(String level, String sequence){
+        checkForUpdateThenSignTransaction(level, sequence);
+    }
+
+    private static void checkForUpdateThenSignTransaction(String level, String sequence){
+        ScwService.ScwCheckForMandatoryAppUpdateCallback callback =
+            new ScwService.ScwCheckForMandatoryAppUpdateCallback() {
+                @Override
+                public void onMandatoryAppUpdateNeeded(boolean needed) {
+                    if(needed){
+                        Util.launchDeepLink(currentContext, ScwDeepLink.GALAXY_STORE);
+                    } else {
+                        signEthTransaction(level, sequence);
+                    }
+                }
+            };
+
+        currentContext.SbkInstance.checkForMandatoryAppUpdate(callback);
+    }
+
+    private static void signEthTransaction(String level, String sequence){
+        String speed = "average"; // slow | average | fast
+
+        TransactionViewModel.createAndSignTransaction(currentContext, publicAddress, publicAddress, new BigInteger(level), sequence, speed, new ScwService.ScwSignEthTransactionCallback() {
+            @Override
+            public void onSuccess(byte[] bytes) {
+                Log.i(Util.LOG_TAG, "Signing Successful!");
+                TransactionViewModel.setSignedTransaction(bytes);
+                TransactionViewModel.sendTransaction(currentContext);
+            }
+
+            @Override
+            public void onFailure(int errorCode, @Nullable String errorMessage) {
+                Log.i(Util.LOG_TAG, "FAILED to Sign Transaction, errorCode: " + errorCode + " errorMessage: " + errorMessage);
+            }
+        });
+    }
+
+    // Don't remove, this is an api
+    public static void gotoSamsungBlockchainKeystoreMenu(){
+        Util.launchDeepLink(currentContext, ScwDeepLink.MAIN);
+    }
+
+
 }
