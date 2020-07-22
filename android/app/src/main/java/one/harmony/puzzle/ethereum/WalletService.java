@@ -34,7 +34,8 @@ public class WalletService {
 
     public Observable<List> getTopPlayers() {
         return Observable.create(emitter -> {
-            Credentials credentials = Credentials.create("155FD0A535250B64B9DF7956FC542A24343176B009D21C8111AFCE6AB74A5F96");
+            String privateKey = "";//TODO get user private key
+            Credentials credentials = Credentials.create(privateKey);
 
             Puzzle puzzle = Puzzle.load(Constants.PUZZLE_CONTRACT, web3j, credentials, new DefaultGasProvider());
 
